@@ -5,14 +5,11 @@ import com.mall.ai.service.AiChatService;
 import com.mall.ai.service.SemanticCacheService;
 import java.time.Duration;
 import java.util.concurrent.TimeoutException;
-import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.prompt.Prompt;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
-import reactor.core.publisher.Mono;
 
 /**
  * AI 聊天服务实现类。
@@ -33,11 +30,15 @@ import reactor.core.publisher.Mono;
  */
 @Slf4j
 @Service
-@RequiredArgsConstructor
 public class AiChatServiceImpl implements AiChatService {
 
-    private final ChatClient.Builder chatClientBuilder;
+    private final ChatClient chatClient;
     private final SemanticCacheService semanticCacheService;
+
+    public AiChatServiceImpl(ChatClient chatClient, SemanticCacheService semanticCacheService) {
+        this.chatClient = chatClient;
+        this.semanticCacheService = semanticCacheService;
+    }
 
     @Value("${ai.deepseek.timeout-seconds:60}")
     private int timeoutSeconds;
@@ -99,8 +100,6 @@ public class AiChatServiceImpl implements AiChatService {
      * @return Token 流式响应
      */
     private Flux<String> doChatStream(ChatRequest request) {
-        ChatClient chatClient = chatClientBuilder.build();
-
         StringBuilder fullResponse = new StringBuilder();
 
         return chatClient.prompt()
@@ -149,7 +148,6 @@ public class AiChatServiceImpl implements AiChatService {
         }
 
         try {
-            ChatClient chatClient = chatClientBuilder.build();
             String response = chatClient.prompt()
                     .user(request.getQuestion())
                     .call()
