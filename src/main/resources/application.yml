@@ -57,7 +57,7 @@ management:
 ai:
   semantic-cache:
     enabled: true
-    similarity-threshold: 0.92
+    similarity-threshold: 0.8
     ttl-seconds: 3600
   deepseek:
     timeout-seconds: 60

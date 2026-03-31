@@ -61,13 +61,21 @@ public class SemanticCacheServiceImpl implements SemanticCacheService {
 
             if (documents != null && !documents.isEmpty()) {
                 org.springframework.ai.document.Document doc = documents.get(0);
-                String response = String.valueOf(doc.getMetadata().get("response"));
-                Object scoreObj = doc.getMetadata().get("score");
+                String docText = doc.getText();
+                log.debug("Cache hit - doc text: {}, metadata: {}", docText, doc.getMetadata());
+
+                String response = extractResponse(docText);
+                if (response == null) {
+                    log.warn("Cache hit but response extraction failed, doc text: {}", truncate(docText, 30));
+                    return null;
+                }
+
+                Object scoreObj = doc.getMetadata().get("distance");
                 String scoreStr = (scoreObj != null) ? String.valueOf(scoreObj) : "N/A";
                 String source = String.valueOf(doc.getMetadata().getOrDefault("source", "unknown"));
 
                 log.info("Semantic cache hit: similarity={}, source={}, question={}",
-                        scoreStr, source, truncate(doc.getText(), 30));
+                        scoreStr, source, truncate(docText, 30));
                 return response;
             }
 
@@ -85,25 +93,28 @@ public class SemanticCacheServiceImpl implements SemanticCacheService {
         if (!enabled) {
             return;
         }
-        
+
         if (question == null || question.isBlank() || response == null || response.isBlank()) {
             log.warn("Invalid question or response, skipping save");
             return;
         }
 
         try {
-            org.springframework.ai.document.Document document = 
+            String docText = "Q: " + question + "\nA: " + response;
+
+            var metadata = new java.util.HashMap<String, Object>();
+            metadata.put("source", "semantic-cache");
+            metadata.put("timestamp", System.currentTimeMillis());
+
+            org.springframework.ai.document.Document document =
                     new org.springframework.ai.document.Document(
-                            question,
-                            java.util.Map.of(
-                                    "response", response,
-                                    "source", "semantic-cache",
-                                    "timestamp", String.valueOf(System.currentTimeMillis())
-                            )
+                            docText,
+                            metadata
                     );
 
             vectorStore.add(List.of(document));
-            log.info("Saved response to semantic cache: question={}", truncate(question, 30));
+            log.info("Saved response to semantic cache: question={}, responseLength={}",
+                    truncate(question, 30), response.length());
         } catch (Exception e) {
             log.error("Error saving to semantic cache: question={}", truncate(question, 30), e);
         }
@@ -178,5 +189,16 @@ public class SemanticCacheServiceImpl implements SemanticCacheService {
             return "null";
         }
         return str.length() <= maxLen ? str : str.substring(0, maxLen) + "...";
+    }
+
+    private String extractResponse(String docText) {
+        if (docText == null || !docText.startsWith("Q: ")) {
+            return null;
+        }
+        int aIndex = docText.indexOf("\nA: ");
+        if (aIndex < 0) {
+            return null;
+        }
+        return docText.substring(aIndex + 4);
     }
 }
