@@ -1,8 +1,8 @@
 package com.mall.ai.service.impl;
 
+import com.mall.ai.annotation.SemanticCacheable;
 import com.mall.ai.model.ChatRequest;
 import com.mall.ai.service.AiChatService;
-import com.mall.ai.service.SemanticCacheService;
 import java.time.Duration;
 import java.util.concurrent.TimeoutException;
 import lombok.extern.slf4j.Slf4j;
@@ -13,31 +13,30 @@ import reactor.core.publisher.Flux;
 
 /**
  * AI 聊天服务实现类。
- * 
+ *
  * <p>基于 Spring AI 的 ChatClient 实现，对接 DeepSeek 大模型。
- * 支持流式响应、语义缓存及异常降级处理。</p>
- * 
- * <p>核心流程：</p>
- * <ol>
- *   <li>检查语义缓存，若命中则直接返回</li>
- *   <li>构建 Prompt 并调用 DeepSeek API</li>
- *   <li>流式返回 Token，同时收集完整响应</li>
- *   <li>响应完成后存入语义缓存</li>
- * </ol>
- * 
+ * 核心职责是与 AI 模型交互，语义缓存功能由 AOP 切面处理。</p>
+ *
+ * <p>架构说明：</p>
+ * <ul>
+ *   <li>本类专注于 AI 对话核心逻辑</li>
+ *   <li>使用 @SemanticCacheable 注解声明缓存需求</li>
+ *   <li>缓存检查与保存由 SemanticCacheAspect 自动处理</li>
+ * </ul>
+ *
  * @author onlineShopAI Team
  * @version 1.0.0
+ * @see SemanticCacheable
+ * @see com.mall.ai.aspect.SemanticCacheAspect
  */
 @Slf4j
 @Service
 public class AiChatServiceImpl implements AiChatService {
 
     private final ChatClient chatClient;
-    private final SemanticCacheService semanticCacheService;
 
-    public AiChatServiceImpl(ChatClient chatClient, SemanticCacheService semanticCacheService) {
+    public AiChatServiceImpl(ChatClient chatClient) {
         this.chatClient = chatClient;
-        this.semanticCacheService = semanticCacheService;
     }
 
     @Value("${ai.deepseek.timeout-seconds:60}")
@@ -46,40 +45,32 @@ public class AiChatServiceImpl implements AiChatService {
     @Value("${ai.deepseek.fallback-message:抱歉，AI服务暂时繁忙，请稍后重试。}")
     private String fallbackMessage;
 
-    @Value("${ai.semantic-cache.enabled:true}")
-    private boolean semanticCacheEnabled;
-
     /**
      * 流式聊天实现。
-     * 
-     * <p>处理流程：</p>
+     *
+     * <p>核心流程：</p>
      * <ol>
-     *   <li>参数校验与预处理</li>
-     *   <li>语义缓存检查</li>
-     *   <li>调用大模型获取流式响应</li>
+     *   <li>参数校验</li>
+     *   <li>调用 ChatClient 获取流式响应</li>
      *   <li>异常处理与降级</li>
      * </ol>
+     *
+     * <p>缓存处理由 {@link SemanticCacheable} 注解声明，
+     * 由 {@link com.mall.ai.aspect.SemanticCacheAspect} AOP 切面执行</p>
      *
      * @param request 聊天请求
      * @return Token 流式响应
      */
     @Override
+    @SemanticCacheable(checkCache = true, cacheResult = true)
     public Flux<String> chatStream(ChatRequest request) {
         if (request == null || request.getQuestion() == null || request.getQuestion().isBlank()) {
             log.warn("Invalid chat request: request is null or question is blank");
             return Flux.just(fallbackMessage);
         }
 
-        log.debug("Processing chat stream request, sessionId: {}, question: {}", 
+        log.debug("Processing chat stream request, sessionId: {}, question: {}",
                 request.getSessionId(), truncate(request.getQuestion(), 50));
-
-        if (semanticCacheEnabled) {
-            String cachedResponse = semanticCacheService.findSimilarResponse(request.getQuestion());
-            if (cachedResponse != null) {
-                log.info("Semantic cache hit for sessionId: {}", request.getSessionId());
-                return Flux.just(cachedResponse);
-            }
-        }
 
         return doChatStream(request)
                 .timeout(Duration.ofSeconds(timeoutSeconds))
@@ -100,37 +91,32 @@ public class AiChatServiceImpl implements AiChatService {
      * @return Token 流式响应
      */
     private Flux<String> doChatStream(ChatRequest request) {
-        StringBuilder fullResponse = new StringBuilder();
-
         return chatClient.prompt()
                 .user(request.getQuestion())
                 .stream()
                 .content()
-                .map(token -> {
-                    if (token == null) {
-                        return "";
-                    }
-                    return token.trim();
-                })
-                .filter(token -> !token.isEmpty())
-                .doOnNext(fullResponse::append)
-                .doOnComplete(() -> {
-                    if (semanticCacheEnabled && fullResponse.length() > 0) {
-                        semanticCacheService.saveResponse(request.getQuestion(), fullResponse.toString());
-                        log.debug("Saved response to semantic cache for sessionId: {}", request.getSessionId());
-                    }
-                })
-                .doOnError(e -> log.error("Error during chat stream for sessionId: {}", 
-                        request.getSessionId(), e));
+                .map(token -> token == null ? "" : token.trim())
+                .filter(token -> !token.isEmpty());
     }
 
     /**
      * 同步聊天实现。
      *
+     * <p>核心流程：</p>
+     * <ol>
+     *   <li>参数校验</li>
+     *   <li>调用 ChatClient 获取响应</li>
+     *   <li>异常处理与降级</li>
+     * </ol>
+     *
+     * <p>缓存处理由 {@link SemanticCacheable} 注解声明，
+     * 由 {@link com.mall.ai.aspect.SemanticCacheAspect} AOP 切面执行</p>
+     *
      * @param request 聊天请求
      * @return 完整的 AI 回复
      */
     @Override
+    @SemanticCacheable(checkCache = true, cacheResult = true)
     public String chat(ChatRequest request) {
         if (request == null || request.getQuestion() == null || request.getQuestion().isBlank()) {
             log.warn("Invalid chat request: request is null or question is blank");
@@ -139,25 +125,13 @@ public class AiChatServiceImpl implements AiChatService {
 
         log.debug("Processing chat request, sessionId: {}", request.getSessionId());
 
-        if (semanticCacheEnabled) {
-            String cachedResponse = semanticCacheService.findSimilarResponse(request.getQuestion());
-            if (cachedResponse != null) {
-                log.info("Semantic cache hit for sessionId: {}", request.getSessionId());
-                return cachedResponse;
-            }
-        }
-
         try {
             String response = chatClient.prompt()
                     .user(request.getQuestion())
                     .call()
                     .content();
 
-            if (semanticCacheEnabled && response != null && !response.isBlank()) {
-                semanticCacheService.saveResponse(request.getQuestion(), response);
-            }
-
-            return response != null ? response : fallbackMessage;
+            return response != null && !response.isBlank() ? response : fallbackMessage;
         } catch (Exception e) {
             log.error("Chat error for sessionId: {}", request.getSessionId(), e);
             return fallbackMessage;
@@ -172,33 +146,21 @@ public class AiChatServiceImpl implements AiChatService {
      */
     @Override
     public String checkSemanticCache(ChatRequest request) {
-        if (!semanticCacheEnabled || request == null || request.getQuestion() == null) {
-            return null;
-        }
-        return semanticCacheService.findSimilarResponse(request.getQuestion());
+        return null;
     }
 
     /**
-     * 存入语义缓存。
+     * 将问答对存入语义缓存。
+     *
+     * <p>注：此方法已废弃，缓存逻辑由 AOP 切面自动处理。</p>
      *
      * @param request  聊天请求
-     * @param response AI 回复
+     * @param response AI 回复内容
      */
     @Override
     public void saveToSemanticCache(ChatRequest request, String response) {
-        if (!semanticCacheEnabled || request == null || request.getQuestion() == null || response == null) {
-            return;
-        }
-        semanticCacheService.saveResponse(request.getQuestion(), response);
     }
 
-    /**
-     * 截断字符串用于日志输出。
-     *
-     * @param str     原字符串
-     * @param maxLen  最大长度
-     * @return 截断后的字符串
-     */
     private String truncate(String str, int maxLen) {
         if (str == null) {
             return "null";
